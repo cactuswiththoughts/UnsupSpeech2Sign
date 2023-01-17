@@ -35,21 +35,21 @@ function error
     exit 1
 }
 
-DATA_DIR=  # =====> Path to LJSpeech
+DATA_DIR=  # <===== Path to LJSpeech
 MODEL_NAME=vgg19
 max_image_per_ltr=1000  # XXX 30
 n_cpc_clus=26
 
 export W2V_ENV
 export CPC_ENV
-export LIBRI_ROOT=  # =====> Path to LibriSpeech
-export KALDI_ROOT=  # =====> Path to Kaldi
-export FAIRSEQ_ROOT=  # =====> Path to fairseq
-export KENLM_ROOT=  # =====> Path to KenLM
-export RVAD_ROOT=  # =====> Path to VAD
+export LIBRI_ROOT=  # <===== Path to LibriSpeech
+export KALDI_ROOT=  # <===== Path to Kaldi
+export FAIRSEQ_ROOT=  # <===== Path to fairseq
+export KENLM_ROOT=  # <===== Path to KenLM
+export RVAD_ROOT=  # <===== Path to VAD
 export CPC_ROOT=$(pwd)/../CPC_audio
 
-W2V=  # =====> Path to wav2vec 2.0 pretrained on LibriLight
+W2V=  # <===== Path to wav2vec 2.0 pretrained on LibriLight
 
 set -e
 set -u
