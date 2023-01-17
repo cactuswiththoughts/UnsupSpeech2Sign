@@ -1,0 +1,129 @@
+# @package _group_
+
+common:
+  fp16: false
+  fp16_no_flatten_grads: true
+  log_format: json
+  log_interval: 100
+  tensorboard_logdir: ../0/tb
+  reset_logging: false
+  suppress_crashes: false
+
+checkpoint:
+  save_interval: 1000
+  save_interval_updates: 1000
+  no_epoch_checkpoints: true
+  best_checkpoint_metric: uer
+  save_dir: .
+
+distributed_training:
+  distributed_world_size: 1
+
+task:
+  _name: unpaired_audio_text
+  data: ???
+  text_data: ???
+  shuffle: False
+  labels: wrd
+  sort_by_length: false
+  unfiltered: false
+  max_length: null
+  append_eos: false
+  kenlm_path: ???
+  random_choice: False
+
+dataset:
+  num_workers: 6
+  required_batch_size_multiple: 1 
+  batch_size: 16000
+  skip_invalid_size_inputs_valid_test: true
+  valid_subset: valid
+  validate_interval: 1
+  validate_interval_updates: 20000
+
+criterion:
+  _name: model
+  log_keys:
+    - accuracy_dense
+    - accuracy_token
+    - temp
+    - code_ppl
+
+optimization:
+  max_update: 3000
+  clip_norm: 20.0
+  lr: [0]
+
+optimizer:
+  _name: composite
+  groups:
+    generator:
+      lr: [0.04]
+      lr_float: null
+      optimizer:
+        _name: adam
+        adam_betas: [0.5,0.98]
+        adam_eps: 1e-06
+        weight_decay: 0
+        # amsgrad: false
+      lr_scheduler:
+        _name: fixed
+        warmup_updates: 0
+    discriminator:
+      lr: [ 1.0 ]
+      lr_float: null
+      optimizer:
+        _name: sgd
+        momentum: 0
+        weight_decay: 0
+      lr_scheduler:
+        _name: fixed
+        warmup_updates: 0
+
+lr_scheduler: pass_through
+
+model:
+  _name: wav2vecu_word
+
+  gan_type: L1
+  discriminator_type: mlp
+  reset_discriminator_every_update: true
+  skipgram_size: 6
+  skipgram_only: false
+  no_special_tokens: false
+  no_silence: false
+
+  discriminator_dim: 100
+  discriminator_depth: 0
+  discriminator_kernel: 102
+  discriminator_linear_emb: false
+  discriminator_causal: false
+  discriminator_max_pool: false
+  discriminator_act_after_linear: false
+  discriminator_dropout: 0.0
+  discriminator_weight_norm: false
+
+  generator_stride: 1
+  generator_kernel: 1
+  generator_bias: false
+  generator_dropout: 0.1
+  generator_avg_pool_kernel: 0
+  generator_avg_pool_stride: 1
+ 
+  smoothness_weight: 0.5
+  smoothing: 0
+  smoothing_one_sided: false
+  gumbel: false
+  hard_gumbel: false
+  gradient_penalty: 1.5
+  code_penalty: 4.0
+  nfc_weight: 0.01
+  temp: [ 2,0.1,0.99995 ]
+  input_dim: 38
+
+  segmentation:
+    type: CPC
+    mean_pool_join: true
+    remove_zeros: false
+    in_dim: 102
+    latent_dim: 256

@@ -1,0 +1,237 @@
+#!/bin/bash
+#SBATCH --job-name="logs/wav2vecu_asl_librispeech"
+#SBATCH --output="logs/%j.%N_wav2vecu_asl_librispeech.out"
+#SBATCH --error="logs/%j.%N_wav2vecu_asl_librispeech.err"
+#SBATCH --partition=gpu
+#SBATCH --mem-per-cpu=2400
+#SBATCH --time=24:00:00
+#SBATCH --mail-type=ALL
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=32
+#SBATCH --sockets-per-node=1
+#SBATCH --cores-per-socket=4
+#SBATCH --threads-per-core=4
+#SBATCH --export=ALL
+#SBATCH --gres=gpu:v100:2
+
+# source /opt/miniconda3/etc/profile.d/conda.sh
+W2V_ENV=  # =====> Your wav2vec-U conda environment 
+conda activate ${W2V_ENV}
+
+. parse_options.sh || exit 1;
+
+function error
+{
+    if [ -z "$1" ]
+    then
+        message="fatal error"
+    else
+        message="fatal error: $1"
+    fi
+
+    echo $message
+    echo "finished at $(date)"
+    exit 1
+}
+
+AUDIO_DIR=  # =====> Path to LibriSpeech
+ALIGN_DIR=  # =====> Path to LibriSpeech forced alignment
+VIDEO_DIR=  # =====> Path to MS-ASL videos
+
+export CPC_ENV=  # =====> Your CPC conda environment
+export KALDI_ROOT=  # =====> Path to Kaldi
+export FAIRSEQ_ROOT=  # =====> Path to fairseq
+export KENLM_ROOT=  # =====> Path to KenLM
+export RVAD_ROOT=  # =====> Path to VAD
+export CPC_ROOT=$(pwd)/../CPC_audio
+
+W2V=  # =====> Path to wav2vec 2.0 pretrained on LibriLight
+topk=100
+min_length=5
+n_sp_clus=400
+n_phn_clus=39
+n_vid_clus=$topk
+segment_type=wrd
+vid_feat_name=i3d_joint_charades  #i3d_flow_charades
+vid_pooling=mean
+n_cpc_predicts=3
+stage=1
+stop_stage=1
+
+set -eu
+set -o pipefail
+
+tgt_dir=$(pwd)/manifest/asl_librispeech960_${topk}words
+echo $tgt_dir
+
+if [ ! -d ${tgt_dir} ]; then
+    mkdir -p $tgt_dir  
+fi 
+
+if [ $stage -le 0 ] && [ $stop_stage -ge 0 ]; then
+    echo "Stage 0: Data preparation"
+    bash scripts/prepare_asl_librispeech.sh \
+        --audio-root $AUDIO_DIR \
+        --align-root $ALIGN_DIR \
+        --video-root $VIDEO_DIR \
+        --tgt-dir $tgt_dir \
+        --w2v $W2V \
+        --topk $topk \
+        --min-length $min_length \
+        --n-sp-clus $n_sp_clus \
+        --n-vid-clus $n_vid_clus \
+        --segment-type $segment_type \
+        --vid-feat-name $vid_feat_name \
+        --vid-pooling $vid_pooling \
+        --n-predicts $n_cpc_predicts
+fi
+
+if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
+    echo "Stage 1: image-based L1 GAN training with true word boundaries"
+    PREFIX=w2v_unsup_gan_xp
+
+    # for wav2vec-u, audio features are pre-segmented
+    CONFIG_NAME=l1_w2vu_word_${topk}_segmented_onehot_clus${n_sp_clus}
+    TASK_DATA=$tgt_dir/feat/onehot_clus${n_sp_clus}_vid_cpc_clus${n_vid_clus}
+
+    # unpaired text input
+    TEXT_DATA=$tgt_dir/asl_feat/${vid_feat_name}_cpc_npredicts3_32negatives/CLUS${n_vid_clus}  # path to fairseq-preprocessed gan data (phones dir)
+    KENLM_PATH=$tgt_dir/asl_feat/${vid_feat_name}_cpc_npredicts3_32negatives/CLUS${n_vid_clus}/kenlm.wrd.o3000.bin  # kenlm 4-gram phoneme language model (lm data = gan data here)
+    ckpt_dir=multirun/l1_w2vu_word_${topk}_segmented_onehot_clus${n_sp_clus}_asl_cpc_clus${n_vid_clus}_${vid_feat_name}
+    echo $ckpt_dir  # XXX
+
+    grp=0
+    if [ $grp = 0 ]; then
+        PYTHONPATH=$FAIRSEQ_ROOT PREFIX=$PREFIX fairseq-hydra-train \
+            -m --config-dir config/gan \
+            --config-name $CONFIG_NAME \
+            task.data=$TASK_DATA \
+            task.text_data=$TEXT_DATA \
+            task.kenlm_path=$KENLM_PATH \
+            common.user_dir=$(pwd)/wav2vecu_word \
+            model.code_penalty=0 model.gradient_penalty=0.0 \
+            model.smoothness_weight=0.0 'common.seed=range(0,1)' \
+            hydra.run.dir=$ckpt_dir \
+            hydra.sweep.dir=$ckpt_dir 
+    fi
+fi
+
+if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
+    echo "Stage 2: image-based L1 GAN training with true phoneme boundaries"
+    PREFIX=w2v_unsup_gan_xp
+
+    # for wav2vec-u, audio features are pre-segmented
+    CONFIG_NAME=l1_w2vu_word_${topk}_segmented_onehot_clus${n_sp_clus}
+    TASK_DATA=$tgt_dir/feat/onehot_clus${n_sp_clus}_given_phn_vid_cpc_clus${n_vid_clus}
+
+    # unpaired text input
+    TEXT_DATA=$tgt_dir/asl_feat/${vid_feat_name}_cpc_npredicts3_32negatives/CLUS${n_vid_clus}  # path to fairseq-preprocessed gan data (phones dir)
+    KENLM_PATH=$tgt_dir/asl_feat/${vid_feat_name}_cpc_npredicts3_32negatives/CLUS${n_vid_clus}/kenlm.wrd.o3000.bin  # kenlm 4-gram phoneme language model (lm data = gan data here)
+    ckpt_dir=multirun/l1_w2vu_word_${topk}_segmented_onehot_clus${n_sp_clus}_given_phn_asl_${vid_feat_name}_cpc_clus${n_vid_clus}
+
+    grp=0
+    if [ $grp = 0 ]; then
+        PYTHONPATH=$FAIRSEQ_ROOT PREFIX=$PREFIX fairseq-hydra-train \
+            -m --config-dir config/gan \
+            --config-name $CONFIG_NAME \
+            task.data=$TASK_DATA \
+            task.text_data=$TEXT_DATA \
+            task.kenlm_path=$KENLM_PATH \
+            common.user_dir=$(pwd)/wav2vecu_word \
+            model.code_penalty=0 model.gradient_penalty=0.0 \
+            model.smoothness_weight=0.0 'common.seed=range(0,1)'  # \
+#            checkpoint.save_dir=$ckpt_dir \
+#            hydra.run.dir=$ckpt_dir \
+#            hydra.sweep.dir=$ckpt_dir 
+    fi
+fi
+
+if [ $stage -le 5 ] && [ $stop_stage -ge 5 ]; then
+    echo "Stage 2: Text-based L1 GAN training with true word boundaries"
+    PREFIX=w2v_unsup_gan_xp
+
+    # For wav2vec-U, audio features are pre-segmented
+    CONFIG_NAME=l1_w2vu_word_${topk}_segmented_onehot_clus${n_sp_clus}
+    TASK_DATA=$tgt_dir/feat/onehot_clus${n_sp_clus}
+
+    # Unpaired text input
+    TEXT_DATA=$tgt_dir  # path to fairseq-preprocessed GAN data (phones dir)
+    KENLM_PATH=${tgt_dir}/kenlm.wrd.o3000.bin  # KenLM 4-gram phoneme language model (LM data = GAN data here)
+    ckpt_dir=multirun/l1_w2vu_word_${topk}_segmented_onehot_clus${n_sp_clus}
+
+    grp=0
+    if [ $grp = 0 ]; then
+        PYTHONPATH=$FAIRSEQ_ROOT PREFIX=$PREFIX fairseq-hydra-train \
+            -m --config-dir config/gan \
+            --config-name $CONFIG_NAME \
+            task.data=$TASK_DATA \
+            task.text_data=$TEXT_DATA \
+            task.kenlm_path=$KENLM_PATH \
+            common.user_dir=$(pwd)/wav2vecu_word \
+            model.code_penalty=0 model.gradient_penalty=0.0 \
+            model.smoothness_weight=0.0 'common.seed=range(0,1)' \
+            checkpoint.save_dir='./' \
+            hydra.run.dir=$ckpt_dir \
+            hydra.sweep.dir=$ckpt_dir 
+    fi
+fi
+
+if [ $stage -le 6 ] && [ $stop_stage -ge 6 ]; then
+    echo "Stage 3: Text-based MMD GAN training with true word boundaries"
+    PREFIX=w2v_unsup_gan_xp
+
+    # For wav2vec-U, audio features are pre-segmented
+    CONFIG_NAME=w2vu_word_${topk}_segmented_onehot_clus${n_sp_clus}
+    TASK_DATA=$tgt_dir/feat/onehot_clus${n_sp_clus}
+
+    # Unpaired text input
+    TEXT_DATA=$tgt_dir  # path to fairseq-preprocessed GAN data (phones dir)
+    KENLM_PATH=${tgt_dir}/kenlm.wrd.o3000.bin  # KenLM 4-gram phoneme language model (LM data = GAN data here)
+    ckpt_dir=mmd_w2vu_word_${topk}_segmented_onehot_clus${n_sp_clus}
+
+    grp=0
+    if [ $grp = 0 ]; then
+        PYTHONPATH=$FAIRSEQ_ROOT PREFIX=$PREFIX fairseq-hydra-train \
+            -m --config-dir config/gan \
+            --config-name $CONFIG_NAME \
+            task.data=$TASK_DATA \
+            task.text_data=$TEXT_DATA \
+            task.kenlm_path=$KENLM_PATH \
+            common.user_dir=$(pwd)/wav2vecu_word \
+            model.code_penalty=0,2,4 model.gradient_penalty=0.0 \
+            model.smoothness_weight=0.0 'common.seed=range(0,1)'
+            checkpoint.save_dir=$ckpt_dir \
+            hydra.run.dir=$ckpt_dir \
+            hydra.sweep.dir=$ckpt_dir
+    fi
+fi
+
+if [ $stage -le 7 ] && [ $stop_stage -ge 7 ]; then
+    echo "Stage 4: text-based L1 GAN training with true phoneme boundaries"
+    PREFIX=w2v_unsup_gan_xp
+
+    # for wav2vec-u, audio features are pre-segmented
+    CONFIG_NAME=l1_w2vu_word_${topk}_onehot_clus${n_phn_clus}_phn_mean  #l1_w2vu_word_${topk}_segmented_onehot_clus${n_sp_clus}
+    TASK_DATA=$tgt_dir/feat/onehot_phn  #$tgt_dir/feat/onehot_clus${n_sp_clus}_given_phn
+
+    # unpaired text input
+    TEXT_DATA=$tgt_dir  # path to fairseq-preprocessed gan data (phones dir)
+    KENLM_PATH=$tgt_dir/kenlm.wrd.o3000.bin  # kenlm 4-gram phoneme language model (lm data = gan data here)
+    ckpt_dir=multirun/l1_w2vu_word_${topk}_segmented_onehot_clus${n_sp_clus}_given_phn
+
+    grp=0
+    if [ $grp = 0 ]; then
+        PYTHONPATH=$FAIRSEQ_ROOT PREFIX=$PREFIX fairseq-hydra-train \
+            -m --config-dir config/gan \
+            --config-name $CONFIG_NAME \
+            task.data=$TASK_DATA \
+            task.text_data=$TEXT_DATA \
+            task.kenlm_path=$KENLM_PATH \
+            common.user_dir=$(pwd)/wav2vecu_word \
+            model.code_penalty=0 model.gradient_penalty=0.0 \
+            model.smoothness_weight=0.0 'common.seed=range(0,1)'  # \
+#            checkpoint.save_dir=$ckpt_dir \
+#            hydra.run.dir=$ckpt_dir \
+#            hydra.sweep.dir=$ckpt_dir 
+    fi
+fi

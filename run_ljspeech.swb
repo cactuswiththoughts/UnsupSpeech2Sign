@@ -1,0 +1,279 @@
+#!/bin/bash
+#SBATCH --job-name="logs/wav2vecu_fs_ljspeech"
+#SBATCH --output="logs/%j.%N_wav2vecu_fs_ljspeech.out"
+#SBATCH --error="logs/%j.%N_wav2vecu_fs_ljspeech.err"
+#SBATCH --partition=gpu
+#SBATCH --mem-per-cpu=2400
+#SBATCH --time=24:00:00
+#SBATCH --mail-type=ALL
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=32
+#SBATCH --sockets-per-node=1
+#SBATCH --cores-per-socket=4
+#SBATCH --threads-per-core=4
+#SBATCH --export=ALL
+#SBATCH --gres=gpu:v100:1
+
+# source /opt/miniconda3/etc/profile.d/conda.sh
+W2V_ENV=  # Your wav2vec-U conda environment
+CPC_ENV=  # Your CPC conda environment
+conda activate ${W2V_ENV}
+
+. parse_options.sh || exit 1;
+
+function error
+{
+    if [ -z "$1" ]
+    then
+        message="fatal error"
+    else
+        message="fatal error: $1"
+    fi
+
+    echo $message
+    echo "finished at $(date)"
+    exit 1
+}
+
+DATA_DIR=  # =====> Path to LJSpeech
+MODEL_NAME=vgg19
+max_image_per_ltr=1000  # XXX 30
+n_cpc_clus=26
+
+export W2V_ENV
+export CPC_ENV
+export LIBRI_ROOT=  # =====> Path to LibriSpeech
+export KALDI_ROOT=  # =====> Path to Kaldi
+export FAIRSEQ_ROOT=  # =====> Path to fairseq
+export KENLM_ROOT=  # =====> Path to KenLM
+export RVAD_ROOT=  # =====> Path to VAD
+export CPC_ROOT=$(pwd)/../CPC_audio
+
+W2V=  # =====> Path to wav2vec 2.0 pretrained on LibriLight
+
+set -e
+set -u
+set -o pipefail
+
+s=without_silence_CLUS${n_cpc_clus}
+tgt_dir=$(pwd)/manifest/fs_ljspeech_${max_image_per_ltr}images_per_ltr
+tgt_dir_gt=$(pwd)/manifest/ljspeech
+checkpoint_root=$(pwd)/multirun/fs_ljspeech_${max_image_per_ltr}images_per_ltr_${MODEL_NAME}_CLUS${n_cpc_clus}/0
+
+if [ ! -d ${tgt_dir} ]; then
+    mkdir -p $tgt_dir/with_silence
+    # Assume the *.tsv files already available in ${tgt_dir_gt}
+    cp ${tgt_dir_gt}/without_silence/*.tsv ${tgt_dir}/with_silence 
+fi
+
+if [ ! -d $tgt_dir/$s ]; then
+    mkdir -p $tgt_dir/$s
+fi
+
+stage=4
+stop_stage=4
+if [ $stage -ge 3 ] && [ $stage -le 3 ]; then
+    bash scripts/prepare_ljspeech.sh ${DATA_DIR} ${tgt_dir_gt} ${W2V}
+fi
+
+if [ $stage -ge 4 ] && [ $stage -le 4 ]; then
+    ./scripts/prepare_fingerspell_ljspeech.sh ${DATA_DIR} ${tgt_dir} ${W2V} ${max_image_per_ltr} $n_cpc_clus
+fi
+
+#if [ $stage -ge 5 ] && [ $stage -le 5 ]; then
+#    libri_tgt_dir=manifest/fs_librispeech960_resnet34
+#    ./scripts/prepare_fingerspell_librispeech.sh ${LIBRI_DATA_DIR} ${libri_tgt_dir} ${W2V} ${max_image_per_ltr}
+#fi
+
+# Image-based GAN training
+if [ ${stage} -ge 6 ] && [ ${stop_stage} -le 6 ]; then
+    PREFIX=w2v_unsup_gan_xp
+
+    # For wav2vec-U, audio features are pre-segmented
+    CONFIG_NAME=w2vu
+    TASK_DATA=${tgt_dir}/$s/feat/precompute_pca512_cls128_mean_pooled
+
+    # Unpaired text input
+    TEXT_DATA=${tgt_dir}/$s/phones  # path to fairseq-preprocessed GAN data (phones dir)
+    KENLM_PATH=${tgt_dir}/$s/phones/lm.phones.filtered.04.bin  # KenLM 4-gram phoneme language model (LM data = GAN data here)
+
+    grp=2
+    if [ $grp = 0 ]; then
+        PYTHONPATH=$FAIRSEQ_ROOT PREFIX=$PREFIX fairseq-hydra-train \
+            -m --config-dir config/gan \
+            --config-name $CONFIG_NAME \
+            task.data=${TASK_DATA} \
+            task.text_data=${TEXT_DATA} \
+            task.kenlm_path=${KENLM_PATH} \
+            common.user_dir=${FAIRSEQ_ROOT}/examples/wav2vec/unsupervised \
+            model.code_penalty=4 model.gradient_penalty=1.5,2.0 \
+            model.smoothness_weight=0.75 'common.seed=range(0,1)' \
+            hydra.run.dir=$checkpoint_root/.. \
+            hydra.sweep.dir=$checkpoint_root/..
+    elif [ $grp = 1 ]; then 
+        PYTHONPATH=$FAIRSEQ_ROOT PREFIX=$PREFIX fairseq-hydra-train \
+            -m --config-dir config/gan \
+            --config-name $CONFIG_NAME \
+            task.data=${TASK_DATA} \
+            task.text_data=${TEXT_DATA} \
+            task.kenlm_path=${KENLM_PATH} \
+            common.user_dir=${FAIRSEQ_ROOT}/examples/wav2vec/unsupervised \
+            model.code_penalty=2 model.gradient_penalty=2.0,1.5 \
+            model.smoothness_weight=0.75 'common.seed=range(0,1)'
+    elif [ $grp = 2 ]; then
+        PYTHONPATH=$FAIRSEQ_ROOT PREFIX=$PREFIX fairseq-hydra-train \
+            -m --config-dir config/gan \
+            --config-name $CONFIG_NAME \
+            task.data=${TASK_DATA} \
+            task.text_data=${TEXT_DATA} \
+            task.kenlm_path=${KENLM_PATH} \
+            common.user_dir=${FAIRSEQ_ROOT}/examples/wav2vec/unsupervised \
+            model.code_penalty=4 model.gradient_penalty=1.5,2.0 \
+            model.smoothness_weight=0.5 'common.seed=range(0,1)'
+    else
+        PYTHONPATH=$FAIRSEQ_ROOT PREFIX=$PREFIX fairseq-hydra-train \
+            -m --config-dir config/gan \
+            --config-name $CONFIG_NAME \
+            task.data=${TASK_DATA} \
+            task.text_data=${TEXT_DATA} \
+            task.kenlm_path=${KENLM_PATH} \
+            common.user_dir=${FAIRSEQ_ROOT}/examples/wav2vec/unsupervised \
+            model.code_penalty=4 model.gradient_penalty=2.0,1.5 \
+            model.smoothness_weight=1.0 'common.seed=range(0,1)'
+    fi
+fi
+
+# Character-based topline GAN training
+if [ ${stage} -ge 7 ] && [ ${stop_stage} -le 7 ]; then
+    PREFIX=w2v_unsup_gan_xp
+
+    # For wav2vec-U, audio features are pre-segmented
+    CONFIG_NAME=w2vu
+    TASK_DATA=${tgt_dir_gt}/without_silence/feat/precompute_pca512_cls128_mean_pooled
+
+    # Unpaired text input
+    TEXT_DATA=${tgt_dir_gt}/without_silence/phones  # path to fairseq-preprocessed GAN data (phones dir)
+    KENLM_PATH=${tgt_dir_gt}/without_silence/phones/lm.phones.filtered.04.bin  # KenLM 4-gram phoneme language model (LM data = GAN data here)
+
+    grp=0
+    if [ $grp = 0 ]; then
+        PYTHONPATH=$FAIRSEQ_ROOT PREFIX=$PREFIX fairseq-hydra-train \
+            -m --config-dir config/gan \
+            --config-name $CONFIG_NAME \
+            task.data=${TASK_DATA} \
+            task.text_data=${TEXT_DATA} \
+            task.kenlm_path=${KENLM_PATH} \
+            common.user_dir=${FAIRSEQ_ROOT}/examples/wav2vec/unsupervised \
+            model.code_penalty=4 model.gradient_penalty=2.0,1.5 \
+            model.smoothness_weight=0.75 'common.seed=range(0,1)' 
+    elif [ $grp = 1 ]; then 
+        PYTHONPATH=$FAIRSEQ_ROOT PREFIX=$PREFIX fairseq-hydra-train \
+            -m --config-dir config/gan \
+            --config-name $CONFIG_NAME \
+            task.data=${TASK_DATA} \
+            task.text_data=${TEXT_DATA} \
+            task.kenlm_path=${KENLM_PATH} \
+            common.user_dir=${FAIRSEQ_ROOT}/examples/wav2vec/unsupervised \
+            model.code_penalty=2 model.gradient_penalty=2.0,1.5 \
+            model.smoothness_weight=0.75 'common.seed=range(0,1)'
+    elif [ $grp = 2 ]; then
+        PYTHONPATH=$FAIRSEQ_ROOT PREFIX=$PREFIX fairseq-hydra-train \
+            -m --config-dir config/gan \
+            --config-name $CONFIG_NAME \
+            task.data=${TASK_DATA} \
+            task.text_data=${TEXT_DATA} \
+            task.kenlm_path=${KENLM_PATH} \
+            common.user_dir=${FAIRSEQ_ROOT}/examples/wav2vec/unsupervised \
+            model.code_penalty=4 model.gradient_penalty=2.0,1.5 \
+            model.smoothness_weight=0.5 'common.seed=range(0,1)'
+    else
+        PYTHONPATH=$FAIRSEQ_ROOT PREFIX=$PREFIX fairseq-hydra-train \
+            -m --config-dir config/gan \
+            --config-name $CONFIG_NAME \
+            task.data=${TASK_DATA} \
+            task.text_data=${TEXT_DATA} \
+            task.kenlm_path=${KENLM_PATH} \
+            common.user_dir=${FAIRSEQ_ROOT}/examples/wav2vec/unsupervised \
+            model.code_penalty=4 model.gradient_penalty=2.0,1.5 \
+            model.smoothness_weight=1.0 'common.seed=range(0,1)'
+    fi
+fi
+
+if [ $stage -le 8 ] && [ $stop_stage -ge 8 ]; then
+    cwd=$(pwd)
+    cp $tgt_dir/$s/phones/dict.phn.txt $tgt_dir/$s/feat/precompute_pca512_cls128_mean_pooled
+    # cd ${FAIRSEQ_ROOT}/examples/wav2vec/unsupervised
+    for split in train valid; do
+        HYDRA_FULL_ERROR=1 python ${FAIRSEQ_ROOT}/examples/wav2vec/unsupervised/w2vu_generate.py --config-dir ${cwd}/config/generate --config-name viterbi \
+            fairseq.common.user_dir=${FAIRSEQ_ROOT}/examples/wav2vec/unsupervised \
+            fairseq.task.data=$tgt_dir/$s/feat/precompute_pca512_cls128_mean_pooled \
+            fairseq.common_eval.path=${checkpoint_root}/checkpoint_best.pt \
+            fairseq.dataset.gen_subset=${split} results_path=${checkpoint_root}/fs_ljspeech \
+        || error "w2vu_generate.py fails"
+    done
+    cd ${cwd}
+fi
+
+if [ $stage -le 9 ] && [ $stop_stage -ge 9 ]; then
+    TASK_DATA=${tgt_dir}/$s/feat/precompute_pca512
+    LM_PATH=$tgt_dir/$s/phones/lm.phones.filtered.04.arpa
+    KENLM_PATH=$tgt_dir/$s/phones/lm.phones.filtered.04.bin #kenlm.phn.o4.bin  # KenLM 4-gram phoneme language model (LM data = GAN data here)
+
+    cwd=$(pwd)
+    cd kaldi_self_train/st
+    if [ -L utils ]; then
+        rm utils
+    fi
+    if [ -L steps ]; then
+        rm steps
+    fi
+    ln -s $KALDI_ROOT/egs/wsj/s5/utils utils
+    ln -s $KALDI_ROOT/egs/wsj/s5/steps steps
+    cp $tgt_dir/$s/phones/dict.phn.txt $TASK_DATA
+
+    bash train.sh $tgt_dir/$s/feat/precompute_pca512 \
+        $checkpoint_root/fs_ljspeech \
+        $checkpoint_root/sp_st \
+        $LM_PATH \
+        $KENLM_PATH \
+    || error "train.sh fails"
+
+    cd ${cwd} 
+fi
+
+# Kaldi self-training on fingerspelling sequences
+if [ $stage -le 10 ] && [ $stop_stage -ge 10 ]; then
+    TASK_DATA=$tgt_dir/$s/feat/precompute_pca512_cls128_mean_pooled
+    LM_PATH=$tgt_dir/$s/phones/lm.phones.filtered.04.arpa
+    KENLM_PATH=$tgt_dir/$s/phones/lm.phones.filtered.04.bin #kenlm.phn.o4.bin  # KenLM 4-gram phoneme language model (LM data = GAN data here)
+
+    checkpoint_root=$(pwd)/multirun/2022-10-20/16-41-13/0
+    feat_name=cpc_npredicts3_128negatives_30images_per_ltr
+    fs_feat_dir=$tgt_dir/fs_feat/$feat_name
+    cp $tgt_dir/$s/dict* $TASK_DATA
+    cp $TASK_DATA/*.phn $fs_feat_dir
+    cp $TASK_DATA/*.wrd $fs_feat_dir
+    cp $TASK_DATA/dict* $fs_feat_dir
+    for split in train valid test; do
+        cp $TASK_DATA/$split.phn $TASK_DATA/$split.txt
+    done
+    cwd=$(pwd)
+
+    cd kaldi_self_train/st
+    if [ -L utils ]; then
+        rm utils
+    fi
+    if [ -L steps ]; then
+        rm steps
+    fi
+    ln -s $KALDI_ROOT/egs/wsj/s5/utils utils
+    ln -s $KALDI_ROOT/egs/wsj/s5/steps steps
+    cp $tgt_dir/$s/phones/dict.phn.txt $fs_feat_dir
+
+    bash train.sh $fs_feat_dir \
+        $TASK_DATA \
+        $checkpoint_root/st \
+        $LM_PATH \
+        $KENLM_PATH
+    cd ${cwd} 
+fi

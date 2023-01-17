@@ -1,0 +1,220 @@
+#!/bin/bash
+#SBATCH --job-name="cpc_asl_libri960hr"
+#SBATCH --output="logs/%j.%N.cpc_asl_libri960hr.out"
+#SBATCH --error="logs/%j.%N.cpc_asl_libri960hr.err"
+#SBATCH --partition=cpun1
+#SBATCH --time=4
+#SBATCH --mail-type=ALL
+
+source /opt/miniconda3/etc/profile.d/conda.sh
+
+n_predicts=3
+n_neg=32
+vocab_size=100
+feat_name=i3d_flow_charades
+pooling=mean
+n_vid_clus=100
+get_input=false
+get_encoded=true
+extract_input_feature=true
+video_dir=~/MS-ASL/downloads
+root_dir=$(pwd)/../../UnsupSpeech2Sign
+
+. parse_options.sh || exit 1;
+
+function error
+{
+    if [ -z "$1" ]
+    then
+        message="fatal error"
+    else
+        message="fatal error: $1"
+    fi
+
+    echo $message
+    echo "finished at $(date)"
+    exit 1
+}
+
+ckpt_dir=$(pwd)/../exp/cpc_npredicts_${n_predicts}_${feat_name}_msasl_libri960hr_1000words_${n_neg}negatives
+feat_prefix=$(echo $feat_name | cut -d'_' -f 1)
+if [ $feat_prefix = vgg19 ] || [ $feat_prefix = vgg16 ]; then
+    input_dim=4096
+elif [ $feat_prefix = i3d ]; then
+    mode=$(echo $feat_name | cut -d'_' -f 2)
+    if [ $mode = joint ]; then
+        input_dim=2048
+    else
+        input_dim=1024
+    fi
+else
+    input_dim=512
+fi
+
+tgt_dir=${root_dir}/manifest/asl_librispeech960_${vocab_size}words
+# tgt_cpc_dir=${tgt_dir}/asl_feat/${feat_name}_${pooling}_cpc_npredicts${n_predicts}_${n_neg}negatives
+tgt_cpc_dir=${tgt_dir}/asl_feat/${feat_name}_cpc_npredicts${n_predicts}_${n_neg}negatives
+
+echo $feat_name
+echo $tgt_dir
+echo $ckpt_dir
+
+stage=5
+stop_stage=5
+wrd2vid_path=${tgt_dir}/wrd2vid.json
+if [ $stage -le 0 ] && [ $stop_stage -ge 0 ]; then
+    echo "run_video.swb: stage 0, video classifier feature extraction"
+    if [ $feat_prefix = i3d ]; then
+        mode=$(echo $feat_name | cut -d'_' -f 2)
+        pretrained_data=$(echo $feat_name | cut -d'_' -f 3)
+        feat_extractor_ckpt=$root_dir/../pytorch-i3d/models/${mode}_${pretrained_data}.pt
+        echo $feat_extractor_ckpt    
+        if $extract_input_feature; then
+            if [ $mode = joint ]; then
+                python $root_dir/scripts/concat_features.py \
+                    --in_dir1 $tgt_dir/../MS-ASL/i3d_rgb_${pretrained_data}_$pooling \
+                    --in_dir2 $tgt_dir/../MS-ASL/i3d_flow_${pretrained_data}_$pooling \
+                    --out_dir $tgt_dir/../MS-ASL/i3d_joint_${pretrained_data}_$pooling
+            else
+                python $root_dir/../pytorch-i3d/extract_i3d_asl_video_features.py \
+                    --mode $mode \
+                    --video_root $video_dir \
+                    --json_path $tgt_dir/../MS-ASL/wrd2vid.json \
+                    --load_model $feat_extractor_ckpt \
+                    --save_dir $tgt_dir/../MS-ASL/${feat_name}
+            fi
+        fi
+
+        if [ $mode = flow ] || [ $mode = rgb ]; then
+            python $root_dir/../pytorch-i3d/convert_to_fairseq.py \
+                --in-dir $tgt_dir/../MS-ASL/$feat_name \
+                --out-dir $tgt_dir/../MS-ASL/${feat_name}_${pooling} \
+                --pooling $pooling || error "convert_to_fairseq.py failed"
+        fi 
+    else
+        if $extract_input_feature; then
+            python $root_dir/scripts/extract_video_classifier_features.py \
+                --data_path $video_dir \
+                --metadata_path $tgt_dir/../MS-ASL/wrd2vid.json \
+                --out_path $tgt_dir/../MS-ASL/${feat_name}_${pooling} \
+            || error "extract_video_classifier_features.py failed"
+#            --classify
+        fi
+    fi
+fi
+
+# if [ $stage -le 1 ] && [ $stop_stage -ge 1 ]; then
+#     echo "run_video.swb: stage 1, clustering of video classifier features"
+#     python $root_dir/scripts/image_cluster_sklearn.py \
+#          ${tgt_dir}/../MS-ASL/${feat_name}_mean/train.npy \
+#          --save-dir ${tgt_dir}/../MS-ASL/${feat_name}_${pooling} \
+#          --n_clusters $n_vid_clus --sample-pct 1.0 \
+#    || error "image_cluster_sklearn.py fails"
+
+#    python $root_dir/scripts/image_apply_cluster_sklearn.py \
+#        ${tgt_dir}/../MS-ASL/${feat_name}_${pooling} --split train --path ${tgt_dir}/../MS-ASL/${feat_name}_${pooling}/CLUS$n_vid_clus \
+#    || error "image_apply_cluster_sklearn.py fails"
+
+#    python $root_dir/scripts/nmi.py \
+#        $tgt_dir/../MS-ASL/${feat_name}_${pooling}/CLUS$n_vid_clus/train.src \
+#        $tgt_dir/../MS-ASL/${feat_name}_${pooling}/train.tsv \
+#        --save_path $tgt_dir/../MS-ASL/${feat_name}_${pooling}/CLUS$n_vid_clus/results.txt || error "nmi.py failed"
+# fi
+
+if [ $stage -le 2 ] && [ $stop_stage -ge 2 ]; then
+    echo "run_video.swb: stage 2, train video CPC using videos from ${wrd2vid_path}" 
+    conda activate ${CPC_ENV}
+    if [ $get_input = false ]; then
+        python train_video.py \
+            --pathDB ${root_dir}/manifest/asl_librispeech960_1000words \
+            --wrd2vid_path ${root_dir}/manifest/asl_librispeech960_1000words/wrd2vid.json \
+            --pathFeat ${root_dir}/manifest/MS-ASL/${feat_name}_${pooling}/train \
+            --max_keep_sample_size 200 \
+            --min_keep_sample_size 5 \
+            --max_sample_size 256 \
+            --samplingType uniform \
+            --negativeSamplingExt ${n_neg} \
+            --encoder_type ffn \
+            --rnnMode ffd \
+            --inputEncoder $input_dim \
+            --nPredicts ${n_predicts} \
+            --pathCheckpoint ${ckpt_dir} \
+            --learningRate 1e-3
+#            --pathDB $tgt_dir \
+#            --wrd2vid_path $tgt_dir/wrd2vid.json \
+    fi
+    conda deactivate
+fi
+
+if [ $stage -le 3 ] && [ $stop_stage -ge 3 ]; then
+    echo "run_video.swb: stage 3, extract video CPC features" 
+    conda activate ${CPC_ENV}
+    ckpt_path=${ckpt_dir}/checkpoint_199.pt
+    for x in train dev test; do
+        input_args="${ckpt_path} \
+            ${tgt_dir} \
+            ${wrd2vid_path} \
+            ${tgt_dir}/../MS-ASL/${feat_name}_${pooling}/train \
+            $tgt_cpc_dir \
+            --split $x \
+            --cpu"
+        
+        if $get_encoded; then
+            input_args="${input_args} --get_encoded"                
+        elif $get_input; then
+            input_args="${input_args} --get_input"
+        fi
+        
+        if [ $pooling = concat ]; then
+            input_args="${input_args} --merge-segment"
+        fi
+        python build_video_CPC_features.py $input_args
+    done
+    cp ${tgt_cpc_dir}/dev.npy ${tgt_cpc_dir}/valid.npy
+    cp ${tgt_cpc_dir}/dev.lengths ${tgt_cpc_dir}/valid.lengths
+    conda deactivate
+fi
+
+# Cluster CPC features
+if [ ${stage} -le 4 ] && [ ${stop_stage} -ge 4 ]; then
+    echo "run_video.swb: stage 4, cluster video CPC features" 
+    conda activate ${W2V_ENV}
+    python ${root_dir}/scripts/image_cluster_faiss.py \
+        ${tgt_cpc_dir}/train.npy \
+        --save-dir ${tgt_cpc_dir} \
+        -f CLUS${n_vid_clus} --sample-pct 1.0 \
+    || error "image_cluster_faiss.py fails"
+    
+#    python ${root_dir}/scripts/image_cluster_sklearn.py \
+#        ${tgt_cpc_dir}/train.npy \
+#        --save-dir ${tgt_cpc_dir} \
+#        --n_clusters ${n_vid_clus} --sample-pct 1.0 \
+#    || error "image_cluster_sklearn.py fails"
+
+    for split in train valid test; do
+        python ${root_dir}/scripts/image_apply_cluster_faiss.py \
+            ${tgt_cpc_dir} \
+            --split ${split} \
+            --path ${tgt_cpc_dir}/CLUS${n_vid_clus} \
+            --fmt faiss \
+        || error "image_apply_cluster_faiss.py fails"
+
+        python ${root_dir}/scripts/nmi.py \
+            ${tgt_cpc_dir}/CLUS${n_vid_clus}/${split}.src \
+            ${tgt_dir}/${split}.wrd \
+            --save_path ${tgt_cpc_dir}/CLUS${n_vid_clus}/${split}_results.txt || error "nmi.py failed"
+    done
+fi
+
+if [ ${stage} -le 5 ] && [ ${stop_stage} -ge 5 ]; then
+    conda activate ${CPC_ENV}
+    
+    ckpt_path=${ckpt_dir}/checkpoint_199.pt
+    echo $ckpt_path
+    python build_word_video_CPC_features.py \
+        ${ckpt_path} \
+        ${tgt_dir}/../MS-ASL/${feat_name}_${pooling}/train \
+        ${tgt_dir}/../MS-ASL/${feat_name}_${pooling}_cpc \
+        --split train \
+        --cpu
+fi
