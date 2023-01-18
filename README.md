@@ -4,8 +4,9 @@ This repository contains the source code for the paper "Speak, Decipher and Sign
 
 ### Dependencies
 - [fairseq](https://github.com/pytorch/fairseq) >= 1.0.0 with dependencies for [wav2vec-u](https://github.com/pytorch/fairseq/tree/main/examples/wav2vec/unsupervised)
-- [CPC_Audio](https://github.com/facebookresearch/CPC_audio.git) >= b98a1bdf1fe9ea219816db7a6c28115d404a3510
+- [CPC_audio](https://github.com/facebookresearch/CPC_audio.git) >= b98a1bdf1fe9ea219816db7a6c28115d404a3510
 - [pytorch-i3d](https://github.com/piergiaj/pytorch-i3d.git) >= 05783d11f9632b25fe3d50395a9c9bb51f848d6d
+- [python-dtw](https://pypi.org/project/dtw-python)
 
 ### How to run it?
 0. Change paths marked by ```<=====``` in ```run_{asl_librispeech, ljspeech}.sh```
