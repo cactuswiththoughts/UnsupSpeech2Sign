@@ -1,5 +1,5 @@
 # Unsupervised Speech-to-Sign Language Recognition
-<div align="middle"><img src="image/speech2sign_u.drawio.png">
+<div align="middle"><img src="image/speech2sign_u.drawio.png"></div>
 This repository contains the source code for the paper "Speak, Decipher and Sign: Toward Unsupervised Speech-to-Sign Language Recognition".
 
 ### Dependencies
