@@ -27,7 +27,7 @@ dim=512
 n_phone=39
 n_phn_clus=100
 
-stage=10
+stage=0
 stop_stage=100
 if [ $stage -le 3 ] && [ $stop_stage -ge 3 ]; then
     echo "prepare_segmented_audio.sh: stage 3"

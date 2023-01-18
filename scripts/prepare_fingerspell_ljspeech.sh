@@ -23,7 +23,7 @@ function error
 
 set -eu
 
-stage=4
+stage=0
 stop_stage=100
 extract_audio_feat=false
 extract_cpc_feat=true

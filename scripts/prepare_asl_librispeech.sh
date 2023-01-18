@@ -41,8 +41,8 @@ function error
 
 set -eu
 
-stage=5
-stop_stage=7
+stage=0
+stop_stage=100
 src_dir=$tgt_dir/../librispeech960
 if [ ! -d $src_dir ]; then
     mkdir -p $src_dir
