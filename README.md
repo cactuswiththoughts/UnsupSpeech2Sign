@@ -1,6 +1,6 @@
 # Unsupervised Speech-to-Sign Language Recognition
 <div align="middle"><img src="image/speech2sign_u.drawio.png" width="600"/></div>
-This repository contains the source code for the paper "Speak, Decipher and Sign: Toward Unsupervised Speech-to-Sign Language Recognition".
+This repository contains the source code for the paper ["Listen, Decipher and Sign: Toward Unsupervised Speech-to-Sign Language Recognition"] (https://www.researchgate.net/publication/370832215_Speak_Decipher_and_Sign_Toward_Unsupervised_Speech-to-Sign_Language_Recognition).
 
 ### Dependencies
 - [fairseq](https://github.com/pytorch/fairseq) >= 1.0.0 with dependencies for [wav2vec-u](https://github.com/pytorch/fairseq/tree/main/examples/wav2vec/unsupervised)
